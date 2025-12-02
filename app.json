@@ -1,3 +1,4 @@
+// covecrm-mobile/app.json
 {
   "expo": {
     "name": "covecrm-mobile",
@@ -25,6 +26,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "44ecb554-9b59-46e1-bdd2-4df2e1a1aae5"
+      }
     }
   }
 }
