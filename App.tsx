@@ -24,7 +24,9 @@ import { connectAndJoin, disconnectSocket } from "./lib/socketClient";
 import {
   registerForPushNotificationsAsync,
   addNotificationResponseListener,
+  getInitialNotificationData,
 } from "./lib/notifications";
+import { setMobileAuthToken } from "./lib/voiceClient";
 
 type MobileUser = {
   id: string;
@@ -62,7 +64,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // mobile JWT from /api/mobile/login (used for API + push registration)
+  // mobile JWT from /api/mobile/login (used for API + push registration + Twilio Voice)
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<MobileUser | null>(null);
 
@@ -99,7 +101,10 @@ export default function App() {
         return;
       }
 
+      // Store mobile JWT for API + Twilio Voice
       setToken(json.token);
+      setMobileAuthToken(json.token);
+
       setUser(json.user);
       setScreen("home");
 
@@ -117,6 +122,9 @@ export default function App() {
   const handleLogout = () => {
     // 🔌 Cleanly disconnect the mobile socket on sign-out
     disconnectSocket();
+
+    // Clear mobile auth for Twilio Voice
+    setMobileAuthToken(null);
 
     setToken(null);
     setUser(null);
@@ -192,56 +200,71 @@ export default function App() {
     };
   }, [token, user?.email]);
 
-  // 🔔 Handle notification taps (deep-link into Conversations)
+  // 🔔 Handle notification taps & cold-start deep link into Conversations
   useEffect(() => {
     if (!token || !user?.email) {
-      // Only listen for taps when logged in; simplifying for now
+      // Only process notifications once we know which user is logged in
       return;
     }
 
-    console.log("[push] Registering notification response listener");
+    console.log(
+      "[push] Registering notification response listener + initial handler for",
+      user.email,
+    );
 
-    const sub = addNotificationResponseListener((data: any) => {
+    const handleNotificationData = (data: any) => {
       try {
         if (!data) return;
 
         const type = data._type || data.type;
-        if (type === "incoming_sms") {
-          const fromPhone =
-            typeof data.fromPhone === "string" ? data.fromPhone : null;
-          const conversationId =
-            typeof data.conversationId === "string"
-              ? data.conversationId
-              : null;
-          const messageId =
-            typeof data.messageId === "string" ? data.messageId : null;
+        if (type !== "incoming_sms") return;
 
-          console.log(
-            "[push] Notification tap → conversation",
-            fromPhone,
-            conversationId,
-            messageId,
-          );
+        const fromPhone =
+          typeof data.fromPhone === "string" ? data.fromPhone : null;
+        const conversationId =
+          typeof data.conversationId === "string" ? data.conversationId : null;
+        const messageId =
+          typeof data.messageId === "string" ? data.messageId : null;
 
-          setDeepLinkTarget({
-            kind: "conversation",
-            fromPhone,
-            conversationId,
-            messageId,
-          });
+        console.log(
+          "[push] Notification (incoming_sms) → deep link",
+          fromPhone,
+          conversationId,
+          messageId,
+        );
 
-          // Jump directly to the Conversations screen
-          setScreen("conversations");
-          setIsMenuOpen(false);
-        }
+        setDeepLinkTarget({
+          kind: "conversation",
+          fromPhone,
+          conversationId,
+          messageId,
+        });
+
+        // Jump directly to the Conversations screen
+        setScreen("conversations");
+        setIsMenuOpen(false);
       } catch (e) {
-        console.warn("[push] Error handling notification tap:", e);
+        console.warn("[push] Error handling notification data:", e);
       }
-    });
+    };
+
+    // Handle the notification that opened the app (cold start / background tap)
+    getInitialNotificationData()
+      .then((initial) => {
+        if (initial) {
+          console.log("[push] Initial notification data:", initial);
+          handleNotificationData(initial);
+        }
+      })
+      .catch((e) => {
+        console.warn("[push] Error in getInitialNotificationData:", e);
+      });
+
+    // Also listen for taps while the app is running / in background
+    const sub = addNotificationResponseListener(handleNotificationData);
 
     return () => {
       try {
-        // Expo Subscription has .remove()
         (sub as any)?.remove?.();
       } catch {
         // ignore
@@ -493,7 +516,9 @@ export default function App() {
               <TouchableOpacity
                 style={styles.sidebarItem}
                 onPress={() => {
-                  Linking.openURL(`${WEB_BASE_URL}/dial-session`).catch(() => {});
+                  Linking.openURL(`${WEB_BASE_URL}/dial-session`).catch(
+                    () => {},
+                  );
                 }}
               >
                 <Text style={styles.sidebarItemText}>Dialer</Text>

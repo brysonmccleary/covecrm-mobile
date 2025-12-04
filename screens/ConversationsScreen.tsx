@@ -1,4 +1,4 @@
-// covecrm-mobile/screens/ConversationsScreen.tsx
+// /covecrm-mobile/screens/ConversationsScreen.tsx
 import React, { useEffect, useRef, useState } from "react";
 import {
   View,
@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { API_BASE_URL } from "../config/api";
 import { connectAndJoin, getSocket } from "../lib/socketClient";
+import { startOutboundCallFromMobile } from "../lib/voiceClient";
 
 type Conversation = {
   _id: string;
@@ -49,6 +50,25 @@ function normalizeDigits(p: string | undefined | null) {
   return (p || "").replace(/\D/g, "");
 }
 
+function toE164(p: string | undefined | null): string {
+  const digits = normalizeDigits(p);
+  if (!digits) return "";
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  if (p && p.trim().startsWith("+")) return p.trim();
+  return `+${digits}`;
+}
+
+// Client-side safety: never display literal "SMS Lead"
+function safeDisplayName(name: string | undefined, phone: string | undefined) {
+  const trimmed = (name || "").trim();
+  const isSmsLead = trimmed && trimmed.toLowerCase() === "sms lead";
+  if (!trimmed || isSmsLead) {
+    return (phone || "").trim() || "Unknown";
+  }
+  return trimmed;
+}
+
 export default function ConversationsScreen({
   token,
   userEmail,
@@ -58,31 +78,31 @@ export default function ConversationsScreen({
   initialConversationId,
   onClearInitialTarget,
 }: ConversationsScreenProps) {
+  // Conversations + errors
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(false);
   const [convError, setConvError] = useState<string | null>(null);
 
+  // Selection + messages + input
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
-
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
   const [input, setInput] = useState("");
 
-  const scrollRef = useRef<ScrollView | null>(null);
-
-  // Keep a ref to the latest conversations for change detection during polling
-  const conversationsRef = useRef<Conversation[]>([]);
-  useEffect(() => {
-    conversationsRef.current = conversations;
-  }, [conversations]);
-
   // Banner for new inbound messages
   const [bannerConv, setBannerConv] = useState<Conversation | null>(null);
   const [bannerVisible, setBannerVisible] = useState(false);
+
+  const scrollRef = useRef<ScrollView | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
   const bannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hasSelection = !!selectedConv;
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   const scrollToBottom = () => {
     scrollRef.current?.scrollToEnd({ animated: true });
@@ -107,7 +127,6 @@ export default function ConversationsScreen({
 
   const handleBannerPress = () => {
     if (!bannerConv) return;
-
     const match =
       conversations.find((c) => c._id === bannerConv._id) || bannerConv;
     setSelectedConv(match);
@@ -124,9 +143,7 @@ export default function ConversationsScreen({
   const fetchConversations = async (opts?: { fromPoll?: boolean }) => {
     const fromPoll = opts?.fromPoll === true;
 
-    if (!fromPoll) {
-      setLoadingConvs(true);
-    }
+    if (!fromPoll) setLoadingConvs(true);
     setConvError(null);
 
     try {
@@ -162,11 +179,9 @@ export default function ConversationsScreen({
         for (const current of list) {
           const prev = prevMap.get(current._id);
 
-          // Only care about inbound messages with unread count / unread flag
           const isInbound =
             current.lastMessageDirection === "inbound" ||
             current.lastMessageDirection === "INBOUND";
-
           if (!isInbound) continue;
 
           const currUnread = current.unreadCount ?? (current.unread ? 1 : 0);
@@ -183,7 +198,6 @@ export default function ConversationsScreen({
 
           const gotNewUnread =
             currUnread > prevUnread && currTime >= prevTime;
-
           const isBrandNewConv = !prev && currUnread > 0;
 
           if (gotNewUnread || isBrandNewConv) {
@@ -203,7 +217,6 @@ export default function ConversationsScreen({
 
       setConversations(list);
 
-      // Only show banner for poll-based refreshes (not initial load)
       if (fromPoll && newestInbound) {
         showBannerForConversation(newestInbound);
       }
@@ -212,9 +225,7 @@ export default function ConversationsScreen({
       setConvError(err?.message || "Failed to load conversations.");
       setConversations([]);
     } finally {
-      if (!fromPoll) {
-        setLoadingConvs(false);
-      }
+      if (!fromPoll) setLoadingConvs(false);
     }
   };
 
@@ -245,7 +256,6 @@ export default function ConversationsScreen({
       const list: Message[] = Array.isArray(data) ? data : data.messages || [];
       setMessages(list);
 
-      // mark as read server-side
       try {
         await fetch(`${API_BASE_URL}/api/mobile/messages/mark-read`, {
           method: "POST",
@@ -271,10 +281,8 @@ export default function ConversationsScreen({
   useEffect(() => {
     if (!token) return;
 
-    // Initial load (shows spinner)
     fetchConversations({ fromPoll: false });
 
-    // Poll every 8 seconds for new inbound messages
     const intervalId = setInterval(() => {
       fetchConversations({ fromPoll: true });
     }, 8000);
@@ -283,6 +291,7 @@ export default function ConversationsScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // Load messages when selection changes
   useEffect(() => {
     if (selectedConv?._id) {
       fetchMessages(selectedConv._id);
@@ -299,6 +308,12 @@ export default function ConversationsScreen({
 
   const handleSelectConversation = (conv: Conversation) => {
     setSelectedConv(conv);
+  };
+
+  const handleBackFromThread = () => {
+    setSelectedConv(null);
+    setMessages([]);
+    setMsgError(null);
   };
 
   const handleSend = async () => {
@@ -332,7 +347,6 @@ export default function ConversationsScreen({
       setMessages((prev) => [...prev, msg]);
       setInput("");
 
-      // refresh conversations list to bump this to the top
       fetchConversations({ fromPoll: false });
     } catch (err: any) {
       console.error("Send message failed", err);
@@ -345,7 +359,6 @@ export default function ConversationsScreen({
     const trimmedEmail = (userEmail || "").trim().toLowerCase();
     if (!trimmedEmail) return;
 
-    // Ensure we are connected & joined to the user's room
     const socket = connectAndJoin(trimmedEmail);
     if (!socket) return;
 
@@ -353,7 +366,6 @@ export default function ConversationsScreen({
       const leadId = message?.leadId;
       if (!leadId) return;
 
-      // If this message belongs to the currently-open thread, append it
       if (selectedConv?._id && leadId === selectedConv._id) {
         const msg: Message = {
           text: message.text,
@@ -364,7 +376,6 @@ export default function ConversationsScreen({
         setMessages((prev) => [...prev, msg]);
 
         if (message.direction === "inbound") {
-          // Mirror web behavior: mark inbound unread as read for this thread
           fetch(`${API_BASE_URL}/api/mobile/messages/mark-read`, {
             method: "POST",
             headers: {
@@ -376,24 +387,21 @@ export default function ConversationsScreen({
         }
       }
 
-      // In all cases, refresh conversations so unread badge / banner stay accurate
       fetchConversations({ fromPoll: true });
     };
 
     const handleServerMessageNew = (payload: any) => {
       const leadId = payload?.leadId;
 
-      // If this inbound is for the currently open thread, refresh it
       if (leadId && selectedConv?._id === leadId) {
         fetchMessages(leadId);
       }
 
-      // Always refresh conversations list to pick up latest lastMessage/unread
       fetchConversations({ fromPoll: true });
     };
 
-    socket.on("newMessage", handleNewMessage); // local echo & app-level updates
-    socket.on("message:new", handleServerMessageNew); // server inbound
+    socket.on("newMessage", handleNewMessage);
+    socket.on("message:new", handleServerMessageNew);
 
     return () => {
       const s = getSocket();
@@ -406,12 +414,8 @@ export default function ConversationsScreen({
 
   // ------- Deep-link auto-selection -------
   useEffect(() => {
-    // If we already have a selection, nothing to do
     if (selectedConv) return;
-
-    // If nothing to target, bail
     if (!initialConversationId && !initialPhone) return;
-
     if (!conversations.length) return;
 
     let target: Conversation | undefined;
@@ -438,9 +442,7 @@ export default function ConversationsScreen({
         target.phone,
       );
       setSelectedConv(target);
-      if (onClearInitialTarget) {
-        onClearInitialTarget();
-      }
+      if (onClearInitialTarget) onClearInitialTarget();
     }
   }, [
     conversations,
@@ -450,23 +452,251 @@ export default function ConversationsScreen({
     onClearInitialTarget,
   ]);
 
+  // ------- Call button handler (Twilio Voice) -------
+  const handleCallPress = async () => {
+    if (!selectedConv?.phone) return;
+
+    const e164 = toE164(selectedConv.phone);
+    if (!e164) {
+      setMsgError("This contact does not have a valid phone number.");
+      return;
+    }
+
+    try {
+      setMsgError(null);
+      console.log("[mobile] Starting outbound call to", e164);
+      await startOutboundCallFromMobile({
+        to: e164,
+        onStatus: (status) => {
+          console.log("[mobile] call status:", status);
+        },
+      });
+    } catch (err: any) {
+      console.error("Mobile call failed:", err);
+      setMsgError(err?.message || "Failed to start call.");
+    }
+  };
+
   // ------- RENDER -------
+
+  const renderConversationList = () => {
+    if (loadingConvs) {
+      return (
+        <View style={styles.centerBlock}>
+          <ActivityIndicator />
+          <Text style={styles.infoText}>Loading conversations…</Text>
+        </View>
+      );
+    }
+
+    if (convError) {
+      return (
+        <View style={styles.centerBlock}>
+          <Text style={styles.errorText}>{convError}</Text>
+          <TouchableOpacity
+            style={styles.buttonOutline}
+            onPress={() => fetchConversations({ fromPoll: false })}
+          >
+            <Text style={styles.buttonOutlineText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    if (!conversations.length) {
+      return (
+        <View style={styles.centerBlock}>
+          <Text style={styles.infoText}>No conversations yet.</Text>
+        </View>
+      );
+    }
+
+    return (
+      <ScrollView
+        style={styles.conversationList}
+        contentContainerStyle={{ paddingBottom: 16 }}
+      >
+        {conversations.map((conv) => {
+          const isActive = selectedConv?._id === conv._id;
+          const timeLabel = conv.lastMessageTime
+            ? new Date(conv.lastMessageTime).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })
+            : "";
+
+          const unreadCount = conv.unreadCount ?? (conv.unread ? 1 : 0);
+          const displayName = safeDisplayName(conv.name, conv.phone);
+
+          return (
+            <TouchableOpacity
+              key={conv._id}
+              onPress={() => handleSelectConversation(conv)}
+              style={[
+                styles.conversationCard,
+                isActive && styles.conversationCardActive,
+              ]}
+            >
+              <View style={styles.convHeaderRow}>
+                <Text style={styles.convName} numberOfLines={1}>
+                  {displayName}
+                </Text>
+
+                {unreadCount > 0 && (
+                  <View style={styles.unreadBadge}>
+                    <Text style={styles.unreadBadgeText}>
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </Text>
+                  </View>
+                )}
+
+                <Text style={styles.convTime}>{timeLabel}</Text>
+              </View>
+              <Text style={styles.convLastMessage} numberOfLines={1}>
+                {conv.lastMessage || "No messages yet"}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    );
+  };
+
+  const renderThread = () => {
+    if (!selectedConv) {
+      return (
+        <View style={styles.centerBlock}>
+          <Text style={styles.infoText}>
+            Select a conversation to view messages.
+          </Text>
+        </View>
+      );
+    }
+
+    const displayName = safeDisplayName(
+      selectedConv.name,
+      selectedConv.phone,
+    );
+    const hasPhone =
+      !!selectedConv.phone && normalizeDigits(selectedConv.phone).length >= 10;
+
+    return (
+      <View style={styles.threadContainer}>
+        {/* iMessage-style header with Back + Call */}
+        <View style={styles.threadHeaderRow}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={handleBackFromThread}
+          >
+            <Text style={styles.backIcon}>‹</Text>
+            <Text style={styles.backText}>Conversations</Text>
+          </TouchableOpacity>
+
+          <View style={styles.threadTitleBlock}>
+            <Text style={styles.threadTitle} numberOfLines={1}>
+              {displayName}
+            </Text>
+            {selectedConv.phone ? (
+              <Text style={styles.threadSub}>{selectedConv.phone}</Text>
+            ) : null}
+          </View>
+
+          {hasPhone && (
+            <TouchableOpacity
+              style={styles.callButton}
+              onPress={handleCallPress}
+            >
+              <Text style={styles.callIcon}>📞</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {loadingMessages && (
+          <View style={styles.centerBlock}>
+            <ActivityIndicator />
+            <Text style={styles.infoText}>Loading messages…</Text>
+          </View>
+        )}
+
+        {msgError && !loadingMessages && (
+          <View style={styles.centerBlock}>
+            <Text style={styles.errorText}>{msgError}</Text>
+          </View>
+        )}
+
+        {!loadingMessages && !msgError && (
+          <>
+            <ScrollView
+              style={styles.messagesList}
+              contentContainerStyle={{ paddingBottom: 12 }}
+              ref={scrollRef}
+            >
+              {messages.map((msg, idx) => {
+                const isSent =
+                  msg.direction === "outbound" || msg.direction === "ai";
+                const bubbleStyle = isSent
+                  ? [styles.bubble, styles.bubbleSent]
+                  : [styles.bubble, styles.bubbleReceived];
+
+                return (
+                  <View
+                    key={`${idx}-${msg.date || ""}`}
+                    style={[
+                      styles.bubbleRow,
+                      isSent
+                        ? styles.bubbleRowSent
+                        : styles.bubbleRowReceived,
+                    ]}
+                  >
+                    <View style={bubbleStyle}>
+                      <Text style={styles.bubbleText}>{msg.text}</Text>
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.inputRow}>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Type your message…"
+                placeholderTextColor="rgba(156,163,175,0.8)"
+                value={input}
+                onChangeText={setInput}
+                onSubmitEditing={handleSend}
+                returnKeyType="send"
+              />
+              <TouchableOpacity
+                style={[
+                  styles.sendButton,
+                  !input.trim() && styles.sendButtonDisabled,
+                ]}
+                onPress={handleSend}
+                disabled={!input.trim()}
+              >
+                <Text style={styles.sendButtonText}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+      </View>
+    );
+  };
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      {/* Header with menu button */}
-      <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.menuButton} onPress={onOpenMenu}>
-          <Text style={styles.menuText}>☰</Text>
-        </TouchableOpacity>
+      {!hasSelection ? (
+        <View style={styles.headerRow}>
+          <TouchableOpacity style={styles.menuButton} onPress={onOpenMenu}>
+            <Text style={styles.menuText}>☰</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Conversations</Text>
+        </View>
+      ) : null}
 
-        <Text style={styles.title}>Conversations</Text>
-      </View>
-
-      {/* New message banner */}
       {bannerVisible && bannerConv && (
         <TouchableOpacity
           style={styles.banner}
@@ -476,7 +706,7 @@ export default function ConversationsScreen({
           <View style={styles.bannerTextContainer}>
             <Text style={styles.bannerTitle} numberOfLines={1}>
               New message from{" "}
-              {bannerConv.name || bannerConv.phone || "Unknown"}
+              {safeDisplayName(bannerConv.name, bannerConv.phone)}
             </Text>
             {bannerConv.lastMessage ? (
               <Text style={styles.bannerBody} numberOfLines={1}>
@@ -488,180 +718,10 @@ export default function ConversationsScreen({
         </TouchableOpacity>
       )}
 
-      {/* BODY: list + thread */}
-      <View style={styles.body}>
-        {/* LEFT: conversation list */}
-        <View style={styles.listColumn}>
-          {loadingConvs && (
-            <View style={styles.centerBlock}>
-              <ActivityIndicator />
-              <Text style={styles.infoText}>Loading conversations…</Text>
-            </View>
-          )}
-
-          {convError && !loadingConvs && (
-            <View style={styles.centerBlock}>
-              <Text style={styles.errorText}>{convError}</Text>
-              <TouchableOpacity
-                style={styles.buttonOutline}
-                onPress={() => fetchConversations({ fromPoll: false })}
-              >
-                <Text style={styles.buttonOutlineText}>Retry</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {!loadingConvs && !convError && conversations.length === 0 && (
-            <View style={styles.centerBlock}>
-              <Text style={styles.infoText}>No conversations yet.</Text>
-            </View>
-          )}
-
-          {!loadingConvs && conversations.length > 0 && (
-            <ScrollView
-              style={styles.conversationList}
-              contentContainerStyle={{ paddingBottom: 16 }}
-            >
-              {conversations.map((conv) => {
-                const isActive = selectedConv?._id === conv._id;
-                const timeLabel = conv.lastMessageTime
-                  ? new Date(conv.lastMessageTime).toLocaleTimeString([], {
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })
-                  : "";
-
-                const unreadCount =
-                  conv.unreadCount ?? (conv.unread ? 1 : 0);
-
-                return (
-                  <TouchableOpacity
-                    key={conv._id}
-                    onPress={() => handleSelectConversation(conv)}
-                    style={[
-                      styles.conversationCard,
-                      isActive && styles.conversationCardActive,
-                    ]}
-                  >
-                    <View style={styles.convHeaderRow}>
-                      <Text style={styles.convName} numberOfLines={1}>
-                        {conv.name || conv.phone || "Unknown"}
-                      </Text>
-
-                      {unreadCount > 0 && (
-                        <View style={styles.unreadBadge}>
-                          <Text style={styles.unreadBadgeText}>
-                            {unreadCount > 99 ? "99+" : unreadCount}
-                          </Text>
-                        </View>
-                      )}
-
-                      <Text style={styles.convTime}>{timeLabel}</Text>
-                    </View>
-                    <Text style={styles.convLastMessage} numberOfLines={1}>
-                      {conv.lastMessage || "No messages yet"}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          )}
-        </View>
-
-        {/* RIGHT: chat thread */}
-        <View style={styles.threadColumn}>
-          {hasSelection ? (
-            <>
-              <View style={styles.threadHeader}>
-                <Text style={styles.threadTitle} numberOfLines={1}>
-                  {selectedConv?.name || selectedConv?.phone || "Conversation"}
-                </Text>
-                {selectedConv?.phone ? (
-                  <Text style={styles.threadSub}>{selectedConv.phone}</Text>
-                ) : null}
-              </View>
-
-              {loadingMessages && (
-                <View style={styles.centerBlock}>
-                  <ActivityIndicator />
-                  <Text style={styles.infoText}>Loading messages…</Text>
-                </View>
-              )}
-
-              {msgError && !loadingMessages && (
-                <View style={styles.centerBlock}>
-                  <Text style={styles.errorText}>{msgError}</Text>
-                </View>
-              )}
-
-              {!loadingMessages && !msgError && (
-                <>
-                  <ScrollView
-                    style={styles.messagesList}
-                    contentContainerStyle={{ paddingBottom: 12 }}
-                    ref={scrollRef}
-                  >
-                    {messages.map((msg, idx) => {
-                      const isSent =
-                        msg.direction === "outbound" || msg.direction === "ai";
-                      const bubbleStyle = isSent
-                        ? [styles.bubble, styles.bubbleSent]
-                        : [styles.bubble, styles.bubbleReceived];
-
-                      return (
-                        <View
-                          key={`${idx}-${msg.date || ""}`}
-                          style={[
-                            styles.bubbleRow,
-                            isSent
-                              ? styles.bubbleRowSent
-                              : styles.bubbleRowReceived,
-                          ]}
-                        >
-                          <View style={bubbleStyle}>
-                            <Text style={styles.bubbleText}>{msg.text}</Text>
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </ScrollView>
-
-                  {/* input bar */}
-                  <View style={styles.inputRow}>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="Type your message…"
-                      placeholderTextColor="rgba(156,163,175,0.8)"
-                      value={input}
-                      onChangeText={setInput}
-                      onSubmitEditing={handleSend}
-                      returnKeyType="send"
-                    />
-                    <TouchableOpacity
-                      style={[
-                        styles.sendButton,
-                        !input.trim() && styles.sendButtonDisabled,
-                      ]}
-                      onPress={handleSend}
-                      disabled={!input.trim()}
-                    >
-                      <Text style={styles.sendButtonText}>Send</Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-            </>
-          ) : (
-            <View style={styles.centerBlock}>
-              <Text style={styles.infoText}>
-                Select a conversation to view messages.
-              </Text>
-            </View>
-          )}
-        </View>
+      <View style={styles.bodySingle}>
+        {!hasSelection ? renderConversationList() : renderThread()}
       </View>
 
-      {/* Logout */}
       <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
         <Text style={styles.logoutText}>Log Out</Text>
       </TouchableOpacity>
@@ -676,6 +736,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 24,
   },
+
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -732,28 +793,18 @@ const styles = StyleSheet.create({
     color: "#bbf7d0",
   },
 
-  body: {
+  // Single-column body (iPhone-style)
+  bodySingle: {
     flex: 1,
-    flexDirection: "row",
-    gap: 12,
-  },
-  listColumn: {
-    flex: 0.9,
+    marginTop: 4,
+    marginBottom: 8,
     backgroundColor: "#020617",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(15,23,42,0.8)",
     paddingVertical: 8,
   },
-  threadColumn: {
-    flex: 1.4,
-    marginLeft: 8,
-    backgroundColor: "#020617",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(15,23,42,0.8)",
-    paddingVertical: 8,
-  },
+
   centerBlock: {
     flex: 1,
     alignItems: "center",
@@ -784,6 +835,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#bfdbfe",
   },
+
   conversationList: {
     flex: 1,
   },
@@ -832,11 +884,39 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#ffffff",
   },
-  threadHeader: {
+
+  // Thread (chat) view
+  threadContainer: {
+    flex: 1,
+  },
+  threadHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: 12,
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(55,65,81,0.8)",
+  },
+  backButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginRight: 12,
+    paddingVertical: 4,
+    paddingRight: 8,
+    paddingLeft: 0,
+  },
+  backIcon: {
+    fontSize: 24,
+    color: "#60a5fa",
+    marginRight: 2,
+  },
+  backText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#60a5fa",
+  },
+  threadTitleBlock: {
+    flex: 1,
   },
   threadTitle: {
     fontSize: 16,
@@ -848,6 +928,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#9ca3af",
   },
+
+  callButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#22c55e",
+    marginLeft: 8,
+  },
+  callIcon: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+
   messagesList: {
     flex: 1,
     paddingHorizontal: 10,
@@ -879,6 +973,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#ffffff",
   },
+
   inputRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -915,8 +1010,9 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#ffffff",
   },
+
   logoutButton: {
-    marginTop: 12,
+    marginTop: 4,
     marginBottom: 12,
     alignSelf: "stretch",
     paddingVertical: 10,

@@ -1,4 +1,3 @@
-// covecrm-mobile/app.json
 {
   "expo": {
     "name": "covecrm-mobile",
@@ -14,7 +13,8 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.brysonmccleary.covecrm-mobile"
     },
     "android": {
       "adaptiveIcon": {
@@ -22,11 +22,15 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.brysonmccleary.covecrmmobile"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      "expo-dev-client"
+    ],
     "extra": {
       "eas": {
         "projectId": "44ecb554-9b59-46e1-bdd2-4df2e1a1aae5"

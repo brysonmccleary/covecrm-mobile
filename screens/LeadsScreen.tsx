@@ -10,6 +10,7 @@ import {
   Linking,
 } from "react-native";
 import { API_BASE_URL } from "../config/api";
+import { startOutboundCall } from "../lib/voiceClient";
 
 export type MobileLead = {
   _id?: string;
@@ -89,15 +90,7 @@ export default function LeadsScreen({
 
     const status = (raw.status || "").toString() || null;
 
-    return {
-      id,
-      fullName,
-      phone,
-      email,
-      state,
-      age,
-      status,
-    };
+    return { id, fullName, phone, email, state, age, status };
   };
 
   const fetchLeads = async () => {
@@ -108,14 +101,12 @@ export default function LeadsScreen({
 
     try {
       const url = `${API_BASE_URL}/api/mobile/leads-by-folder?folderId=${encodeURIComponent(
-        folderId
+        folderId,
       )}`;
 
       const res = await fetch(url, {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       });
 
       if (!res.ok) {
@@ -137,15 +128,16 @@ export default function LeadsScreen({
   };
 
   useEffect(() => {
-    if (token && folderId) {
-      fetchLeads();
-    }
+    if (token && folderId) fetchLeads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, folderId]);
 
   const callLead = (phone?: string | null) => {
     if (!phone) return;
-    Linking.openURL(`tel:${phone}`).catch(() => {});
+    // Outbound via Twilio Voice (per-user CRM number), using mobile JWT.
+    startOutboundCall({ to: phone, jwt: token }).catch((e) => {
+      console.warn("Mobile call failed:", e?.message || e);
+    });
   };
 
   const textLead = (phone?: string | null) => {
@@ -277,144 +269,47 @@ export default function LeadsScreen({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0f172a",
-    paddingHorizontal: 16,
-    paddingTop: 24,
-  },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-  },
+  container: { flex: 1, backgroundColor: "#0f172a", paddingHorizontal: 16, paddingTop: 24 },
+  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
   menuButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#60a5fa",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 8,
+    width: 34, height: 34, borderRadius: 999, borderWidth: 1, borderColor: "#60a5fa",
+    alignItems: "center", justifyContent: "center", marginRight: 8,
   },
-  menuIcon: {
-    fontSize: 18,
-    color: "#bfdbfe",
-    marginTop: -2,
-  },
+  menuIcon: { fontSize: 18, color: "#bfdbfe", marginTop: -2 },
   backButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#60a5fa",
-    marginRight: 8,
+    paddingVertical: 6, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1,
+    borderColor: "#60a5fa", marginRight: 8,
   },
-  backText: {
-    fontSize: 13,
-    fontWeight: "500",
-    color: "#bfdbfe",
-  },
-  title: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#ffffff",
-  },
-  list: {
-    flex: 1,
-    marginTop: 4,
-  },
-  centerBlock: {
-    marginTop: 40,
-    alignItems: "center",
-  },
-  infoText: {
-    marginTop: 8,
-    fontSize: 13,
-    color: "#9ca3af",
-  },
-  errorText: {
-    color: "#fca5a5",
-    fontSize: 13,
-    textAlign: "center",
-  },
+  backText: { fontSize: 13, fontWeight: "500", color: "#bfdbfe" },
+  title: { flex: 1, fontSize: 18, fontWeight: "700", color: "#ffffff" },
+  list: { flex: 1, marginTop: 4 },
+  centerBlock: { marginTop: 40, alignItems: "center" },
+  infoText: { marginTop: 8, fontSize: 13, color: "#9ca3af" },
+  errorText: { color: "#fca5a5", fontSize: 13, textAlign: "center" },
   card: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(96, 165, 250, 0.4)",
-    backgroundColor: "rgba(15, 23, 42, 0.95)",
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: 16, borderWidth: 1, borderColor: "rgba(96, 165, 250, 0.4)",
+    backgroundColor: "rgba(15, 23, 42, 0.95)", padding: 14, marginBottom: 10,
   },
-  name: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#ffffff",
-    marginBottom: 6,
-  },
-  row: {
-    flexDirection: "row",
-    marginTop: 2,
-  },
-  label: {
-    fontSize: 12,
-    color: "#9ca3af",
-  },
-  value: {
-    fontSize: 12,
-    color: "#e5e7eb",
-  },
-  buttonRow: {
-    flexDirection: "row",
-    marginTop: 12,
-  },
+  name: { fontSize: 15, fontWeight: "700", color: "#ffffff", marginBottom: 6 },
+  row: { flexDirection: "row", marginTop: 2 },
+  label: { fontSize: 12, color: "#9ca3af" },
+  value: { fontSize: 12, color: "#e5e7eb" },
+  buttonRow: { flexDirection: "row", marginTop: 12 },
   callButton: {
-    flex: 1,
-    borderRadius: 999,
-    backgroundColor: "#22c55e",
-    paddingVertical: 8,
-    alignItems: "center",
-    marginRight: 8,
+    flex: 1, borderRadius: 999, backgroundColor: "#22c55e",
+    paddingVertical: 8, alignItems: "center", marginRight: 8,
   },
-  callText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#ffffff",
-  },
+  callText: { fontSize: 14, fontWeight: "600", color: "#ffffff" },
   textButton: {
-    flex: 1,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#60a5fa",
-    paddingVertical: 8,
-    alignItems: "center",
+    flex: 1, borderRadius: 999, borderWidth: 1, borderColor: "#60a5fa",
+    paddingVertical: 8, alignItems: "center",
   },
-  textButtonText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#bfdbfe",
-  },
-  disabledButton: {
-    opacity: 0.4,
-  },
-  disabledOutline: {
-    opacity: 0.4,
-  },
+  textButtonText: { fontSize: 14, fontWeight: "600", color: "#bfdbfe" },
+  disabledButton: { opacity: 0.4 },
+  disabledOutline: { opacity: 0.4 },
   logoutButton: {
-    marginTop: 12,
-    marginBottom: 12,
-    alignSelf: "stretch",
-    paddingVertical: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#ffffff",
-    alignItems: "center",
+    marginTop: 12, marginBottom: 12, alignSelf: "stretch", paddingVertical: 10,
+    borderRadius: 999, borderWidth: 1, borderColor: "#ffffff", alignItems: "center",
   },
-  logoutText: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: "#ffffff",
-  },
+  logoutText: { fontSize: 14, fontWeight: "500", color: "#ffffff" },
 });
